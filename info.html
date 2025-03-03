@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Theory Info</title>
+  <style>
+    body {
+      background-color: #222;
+      color: #fff;
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      line-height: 1.6;
+    }
+    a {
+      color: #00f;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <h1>Theory Behind the Simulation</h1>
+  <p>
+    This simulation demonstrates gravitational lensing around a black hole using approximations inspired by general relativity.
+    The black hole is modeled with an <strong>event horizon</strong> defined by the Schwarzschild radius <em>R<sub>s</sub> = 2M</em> (in geometric units where G = c = 1).
+    The <strong>photon sphere</strong>, located roughly at 3M, is the region where light can orbit the black hole.
+  </p>
+  <p>
+    The simulation applies a <strong>thin-lens approximation</strong> to model light deflection. For an incoming ray at an angular distance <em>θ</em> from the black hole’s center,
+    the deflected ray is computed using a formula akin to:
+    <br><br>
+    <em>β = θ - (θ<sub>E</sub><sup>2</sup> / θ)</em>,
+    <br><br>
+    where <em>θ<sub>E</sub></em> (the Einstein radius) is proportional to the mass of the black hole. This approximation is tuned for visual plausibility.
+  </p>
+  <p>
+    In addition, a <strong>spin parameter</strong> (a dimensionless quantity) is included to simulate frame dragging, resulting in a spiral distortion
+    of the lensed image. All parameters are expressed in geometric units:
+    <br>
+    – Mass (M) is in geometric mass units,
+    <br>
+    – Distance (r) is measured in the same units,
+    <br>
+    – Spin (a) is dimensionless.
+  </p>
+  <p>
+    <a href="welcome.html">Back to Welcome Page</a>
+  </p>
+</body>
+</html>

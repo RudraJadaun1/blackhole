@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Physically Accurate Black Hole Lensing Simulation</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background-color: #000;
+    }
+    /* Unit display overlay moved to top-left */
+    #overlay {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: #fff;
+      font-family: Arial, sans-serif;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 10px;
+      border-radius: 5px;
+      z-index: 100;
+    }
+    /* Control instructions overlay moved to bottom-left */
+    #instructionsOverlay {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      color: #fff;
+      font-family: Arial, sans-serif;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 5px;
+      border-radius: 5px;
+      z-index: 100;
+      font-size: 0.8em;
+    }
+    /* Debug overlay moved to bottom-right */
+    #debugOverlay {
+      position: absolute;
+      bottom: 10px;
+      right: 10px;
+      color: #00ff00;
+      font-family: Arial, sans-serif;
+      font-size: 0.8em;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 10px;
+      border-radius: 5px;
+      z-index: 150;
+    }
+  </style>
+</head>
+<body>
+  <!-- Unit display overlay -->
+  <div id="overlay">
+    <div>Mass (M): <span id="massVal">1.00</span> (geom. units)</div>
+    <div>Spin (a): <span id="spinVal">0.50</span> (dimensionless)</div>
+    <div>Distance (r): <span id="distVal">5.00</span> (geom. units)</div>
+    <div style="margin-top: 5px; font-size: 0.8em;">
+      (Press <strong>E</strong> to toggle the photon sphere)
+    </div>
+  </div>
+  <!-- Control instructions overlay -->
+  <div id="instructionsOverlay">
+    <strong>Controls:</strong><br>
+    E: Toggle photon sphere<br>
+    A: Toggle accretion disk<br>
+    M: Display secret message<br>
+    P: Toggle retro/pixelated mode<br>
+    D: Toggle debug overlay<br>
+    N: Toggle normal render mode
+  </div>
+  <!-- Debug overlay -->
+  <div id="debugOverlay" style="display: none;"></div>
+
+  <!-- Three.js, OrbitControls, and dat.GUI from CDNs -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.7/dat.gui.min.js"></script>
+
+  <script>
+    // ===========================
+    // Original Code Starts Here
+    // ===========================
+    // Simulation parameters (in geometric units)
+    const params = {
+      mass: 1.0,      // Black hole mass (M)
+      spin: 0.5,      // Dimensionless spin parameter (a)
+      distance: 5.0   // Camera distance (r)
+    };
+
+    // Set up scene, camera, and renderer
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1000);
+    camera.position.z = params.distance;
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    // OrbitControls for interactive navigation
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+
+    // Create a starfield background
+    const starGeometry = new THREE.BufferGeometry();
+    const starCount = 10000;
+    const starVertices = [];
+    for (let i = 0; i < starCount; i++) {
+      const x = THREE.MathUtils.randFloatSpread(1000);
+      const y = THREE.MathUtils.randFloatSpread(1000);
+      const z = THREE.MathUtils.randFloatSpread(1000);
+      starVertices.push(x, y, z);
+    }
+    starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
+    const starMaterial = new THREE.PointsMaterial({ color: 0xffffff, size: 0.7 });
+    const starField = new THREE.Points(starGeometry, starMaterial);
+    scene.add(starField);
+
+    // Black hole representation:
+    // Event horizon radius = 2*M (Schwarzschild radius)
+    const bhGeometry = new THREE.SphereGeometry(1, 64, 64);
+    const bhMaterial = new THREE.MeshBasicMaterial({ color: 0x000000 });
+    const blackHole = new THREE.Mesh(bhGeometry, bhMaterial);
+    blackHole.scale.set(2 * params.mass, 2 * params.mass, 2 * params.mass);
+    scene.add(blackHole);
+
+    // Photon Sphere (Easter Egg): Wireframe sphere with radius = 3*M
+    const photonGeometry = new THREE.SphereGeometry(1, 32, 32);
+    const photonMaterial = new THREE.MeshBasicMaterial({ color: 0xffa500, wireframe: true });
+    const photonSphere = new THREE.Mesh(photonGeometry, photonMaterial);
+    photonSphere.scale.set(3 * params.mass, 3 * params.mass, 3 * params.mass);
+    photonSphere.visible = false; // Hidden by default
+    scene.add(photonSphere);
+
+    // Toggle photon sphere visibility with the "E" key
+    window.addEventListener('keydown', function(event) {
+      if (event.key === 'e' || event.key === 'E') {
+        photonSphere.visible = !photonSphere.visible;
+        // Audio cue for photon sphere toggle
+        playAudioCue(440, 0.2);
+      }
+    });
+
+    // Set up render target for post-processing
+    const renderTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight);
+
+    // Gravitational lensing shader (thin lens approximation with added spin effect)
+    const lensingShader = {
+      uniforms: {
+        tDiffuse: { value: null },
+        resolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+        mass: { value: params.mass },
+        spin: { value: params.spin },
+        // Black hole center in normalized screen coordinates (center)
+        blackHolePos: { value: new THREE.Vector2(0.5, 0.5) }
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D tDiffuse;
+        uniform vec2 resolution;
+        uniform float mass;
+        uniform float spin;
+        uniform vec2 blackHolePos;
+        varying vec2 vUv;
+        void main() {
+          vec2 uv = vUv;
+          vec2 offset = uv - blackHolePos;
+          float r = length(offset);
+
+          // Define Einstein radius proportional to mass (tuned factor for visualization)
+          float thetaE = mass * 0.2;
+
+          // Render the black hole shadow for rays within the Einstein radius
+          if (r < thetaE) {
+            gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+            return;
+          }
+
+          // Thin lens equation: beta = theta - (thetaE^2 / theta)
+          float beta = r - (thetaE * thetaE) / (r + 1e-6);
+
+          // Add spin effect: rotate the deflection based on the spin parameter and lensing strength
+          float angle = spin * (mass / (r + 1e-6));
+          float cosA = cos(angle);
+          float sinA = sin(angle);
+          vec2 rotatedOffset = vec2(
+            offset.x * cosA - offset.y * sinA,
+            offset.x * sinA + offset.y * cosA
+          );
+
+          // Map back to UV coordinates using the computed deflection (beta)
+          vec2 newOffset = (rotatedOffset / (r + 1e-6)) * beta;
+          vec2 newUV = blackHolePos + newOffset;
+
+          // If new UV coordinates are outside the screen, output black
+          if(newUV.x < 0.0 || newUV.x > 1.0 || newUV.y < 0.0 || newUV.y > 1.0) {
+            gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+          } else {
+            gl_FragColor = texture2D(tDiffuse, newUV);
+          }
+        }
+      `
+    };
+
+    const quadGeometry = new THREE.PlaneBufferGeometry(2, 2);
+    const quadMaterial = new THREE.ShaderMaterial({
+      uniforms: THREE.UniformsUtils.clone(lensingShader.uniforms),
+      vertexShader: lensingShader.vertexShader,
+      fragmentShader: lensingShader.fragmentShader
+    });
+    const quad = new THREE.Mesh(quadGeometry, quadMaterial);
+    const postScene = new THREE.Scene();
+    postScene.add(quad);
+    const postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+    // dat.GUI controls (with unit labels) for mass, spin, and camera distance
+    const gui = new dat.GUI();
+    gui.add(params, 'mass', 0.1, 5.0).step(0.1).name('Mass (M)').onChange(function(value) {
+      quadMaterial.uniforms.mass.value = value;
+      // Update black hole (event horizon: 2*M) and photon sphere (3*M) scales
+      blackHole.scale.set(2 * value, 2 * value, 2 * value);
+      photonSphere.scale.set(3 * value, 3 * value, 3 * value);
+      document.getElementById("massVal").textContent = value.toFixed(2);
+      // Update wormhole mesh scale so its effective radius scales with mass.
+      wormholeMesh.scale.set(value, value, value);
+    });
+    gui.add(params, 'spin', 0.0, 2.0).step(0.01).name('Spin (a)').onChange(function(value) {
+      quadMaterial.uniforms.spin.value = value;
+      document.getElementById("spinVal").textContent = value.toFixed(2);
+    });
+    gui.add(params, 'distance', 1, 20).step(0.1).name('Distance (r)').onChange(function(value) {
+      camera.position.z = value;
+      document.getElementById("distVal").textContent = value.toFixed(2);
+    });
+
+    // Handle window resize
+    window.addEventListener('resize', function() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      quadMaterial.uniforms.resolution.value.set(window.innerWidth, window.innerHeight);
+      renderTarget.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // Animation loop
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+
+      // Render the 3D scene to the render target
+      renderer.setRenderTarget(renderTarget);
+      renderer.render(scene, camera);
+      renderer.setRenderTarget(null);
+
+      // Update the shader's texture and render the post-processed scene
+      quadMaterial.uniforms.tDiffuse.value = renderTarget.texture;
+      renderer.render(postScene, postCamera);
+    }
+    animate();
+
+    // ===========================
+    // Original Code Ends Here
+    // ===========================
+
+    // ===========================
+    // NEW CODE: Hidden Easter Eggs & Enhancements
+    // ===========================
+
+    // -- Funny Secret Message (Science Humor) --
+    const existingSecretMessage = document.getElementById('secretMessage');
+    if(existingSecretMessage){
+      existingSecretMessage.textContent = "Why did the photon refuse to check its luggage? Because it was traveling light!";
+    }
+
+    // -- Audio Easter Eggs: Setup Web Audio API for audio cues --
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    function playAudioCue(frequency, duration) {
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+      oscillator.frequency.value = frequency;
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+      oscillator.start();
+      gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+      oscillator.stop(audioCtx.currentTime + duration);
+    }
+
+    // -- Gravitational Redshift Simulation: Modify the fragment shader at runtime --
+    quadMaterial.onBeforeCompile = function(shader) {
+      shader.fragmentShader = shader.fragmentShader.replace(
+        'gl_FragColor = texture2D(tDiffuse, newUV);',
+        `vec4 texColor = texture2D(tDiffuse, newUV);
+         // Compute distance from the black hole center in UV space
+         float distFromCenter = length(newUV - blackHolePos);
+         // Apply a redshift effect: reduce the red channel with increasing distance
+         texColor.r *= (1.0 - clamp(distFromCenter, 0.0, 1.0) * 0.5);
+         gl_FragColor = texColor;`
+      );
+    };
+    quadMaterial.needsUpdate = true;
+
+    // -- Hidden Visual Effects: Wormhole/Time Warp --
+    // Create a torus geometry with a base radius of 3 (for initial mass=1)
+    const wormholeGeometry = new THREE.TorusGeometry(3, 0.2, 16, 100);
+    const wormholeMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: true });
+    const wormholeMesh = new THREE.Mesh(wormholeGeometry, wormholeMaterial);
+    wormholeMesh.visible = false;
+    scene.add(wormholeMesh);
+    let wormholeTriggered = false;
+    function triggerWormholeEffect() {
+      wormholeMesh.visible = true;
+      playAudioCue(200, 0.5); // Audio cue for wormhole
+      setTimeout(() => {
+        wormholeMesh.visible = false;
+        wormholeTriggered = false;
+      }, 3000);
+      wormholeTriggered = true;
+    }
+    // Check every 500ms if parameters meet the "magic" values to trigger the wormhole
+    setInterval(() => {
+      if (!wormholeTriggered &&
+          Math.abs(params.mass - 3.0) < 0.05 &&
+          Math.abs(params.spin - 1.0) < 0.05 &&
+          Math.abs(params.distance - 10.0) < 0.05) {
+        triggerWormholeEffect();
+      }
+    }, 500);
+
+    // -- Retro/Pixelated Display Mode --
+    let pixelModeActive = false;
+    window.addEventListener('keydown', function(event) {
+      if (event.key === 'p' || event.key === 'P') {
+        pixelModeActive = !pixelModeActive;
+        if(pixelModeActive) {
+          renderer.domElement.style.imageRendering = "pixelated";
+          playAudioCue(600, 0.2); // Retro beep sound
+        } else {
+          renderer.domElement.style.imageRendering = "";
+        }
+      }
+    });
+
+    // -- Debug/Info Overlay --
+    let debugModeActive = false;
+    window.addEventListener('keydown', function(event) {
+      if(event.key === 'd' || event.key === 'D') {
+        debugModeActive = !debugModeActive;
+        document.getElementById('debugOverlay').style.display = debugModeActive ? 'block' : 'none';
+        if(debugModeActive) {
+          playAudioCue(500, 0.2);
+        }
+      }
+    });
+
+    function updateDebugOverlay() {
+      if(debugModeActive) {
+        document.getElementById('debugOverlay').innerHTML = `
+          <strong>Debug Info:</strong><br>
+          Mass: ${params.mass.toFixed(2)}<br>
+          Spin: ${params.spin.toFixed(2)}<br>
+          Distance: ${params.distance.toFixed(2)}<br>
+          Angular Momentum (approx): ${(params.mass * params.spin).toFixed(2)}<br>
+          Wormhole Active: ${wormholeTriggered ? 'Yes' : 'No'}<br>
+          Time: ${(Date.now()/1000).toFixed(2)} s
+        `;
+      }
+      requestAnimationFrame(updateDebugOverlay);
+    }
+    updateDebugOverlay();
+
+    // -- Dynamic Starfield Enhancements (Twinkling Effect) --
+    (function animateStarfield() {
+      requestAnimationFrame(animateStarfield);
+      starMaterial.size = 0.7 + 0.3 * Math.sin(Date.now() * 0.002);
+    })();
+
+    // -- Hidden Accretion Disk (Already Present in Earlier Code) --
+    const accretionDisk = new THREE.Group();
+    function createAccretionDisk() {
+      const particleCount = 1000;
+      const diskGeometry = new THREE.BufferGeometry();
+      const positions = [];
+      for (let i = 0; i < particleCount; i++) {
+        let radius = THREE.MathUtils.randFloat(2.5 * params.mass, 4.0 * params.mass);
+        let angle = THREE.MathUtils.randFloat(0, Math.PI * 2);
+        let x = radius * Math.cos(angle);
+        let y = THREE.MathUtils.randFloatSpread(0.2);
+        let z = radius * Math.sin(angle);
+        positions.push(x, y, z);
+      }
+      diskGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      const diskMaterial = new THREE.PointsMaterial({ color: 0xff4500, size: 0.1 });
+      const diskPoints = new THREE.Points(diskGeometry, diskMaterial);
+      accretionDisk.add(diskPoints);
+    }
+    createAccretionDisk();
+    accretionDisk.visible = false; // hidden by default
+    scene.add(accretionDisk);
+
+    // -- Secret Message Overlay (Funny Science Joke) --
+    let secretMessageDiv = document.getElementById('secretMessage');
+    if (!secretMessageDiv) {
+      secretMessageDiv = document.createElement('div');
+      secretMessageDiv.id = 'secretMessage';
+      secretMessageDiv.style.position = 'absolute';
+      secretMessageDiv.style.top = '50%';
+      secretMessageDiv.style.left = '50%';
+      secretMessageDiv.style.transform = 'translate(-50%, -50%)';
+      secretMessageDiv.style.color = '#00ff00';
+      secretMessageDiv.style.fontFamily = 'Arial, sans-serif';
+      secretMessageDiv.style.fontSize = '2em';
+      secretMessageDiv.style.background = 'rgba(0, 0, 0, 0.7)';
+      secretMessageDiv.style.padding = '20px';
+      secretMessageDiv.style.borderRadius = '10px';
+      secretMessageDiv.style.display = 'none';
+      secretMessageDiv.style.zIndex = '200';
+      secretMessageDiv.textContent = "Why did the photon refuse to check its luggage? Because it was traveling light!";
+      document.body.appendChild(secretMessageDiv);
+    }
+    function showSecretMessage() {
+      secretMessageDiv.style.display = 'block';
+      playAudioCue(300, 0.2); // Audio cue for secret message
+      setTimeout(function() {
+        secretMessageDiv.style.display = 'none';
+      }, 3000);
+    }
+    window.addEventListener('keydown', function(event) {
+      if (event.key === 'a' || event.key === 'A') {
+        accretionDisk.visible = !accretionDisk.visible;
+        playAudioCue(350, 0.2);
+      } else if (event.key === 'm' || event.key === 'M') {
+        showSecretMessage();
+      }
+    });
+
+    // -- New Feature: Toggle Normal Render Mode (Bypass Shader) --
+    let bypassShader = false;
+    window.addEventListener('keydown', function(event) {
+      if(event.key === 'n' || event.key === 'N'){
+         bypassShader = !bypassShader;
+         playAudioCue(700, 0.2);
+      }
+    });
+
+    // Monkey-patch the animate function to toggle between post-processed and direct rendering
+    const originalAnimate = animate;
+    animate = function() {
+      requestAnimationFrame(animate);
+      controls.update();
+
+      if(bypassShader) {
+        renderer.render(scene, camera);
+      } else {
+        renderer.setRenderTarget(renderTarget);
+        renderer.render(scene, camera);
+        renderer.setRenderTarget(null);
+        quadMaterial.uniforms.tDiffuse.value = renderTarget.texture;
+        renderer.render(postScene, postCamera);
+      }
+    };
+  </script>
+</body>
+</html>
